@@ -15,6 +15,7 @@ This Terraform configuration sets up a single-node K3s Kubernetes cluster on Het
 - **Hetzner Cloud Controller Manager**: Manages Hetzner-specific resources
 - **Hetzner CSI Driver**: Provides persistent volume support using Hetzner volumes
 - **Flannel**: Network plugin for pod networking
+- **CloudNative PG**: Best open source postgres for Kubernetes
 
 ### Monitoring Stack
 - **Prometheus**: Metrics collection and storage (30-day retention)
@@ -25,9 +26,12 @@ This Terraform configuration sets up a single-node K3s Kubernetes cluster on Het
 - **cert-manager**: Automatic TLS certificate management
 
 ### Secrets Management
-- **External Secrets Operator**: Synchronizes secrets from AWS Parameter Store into Kubernetes Secrets
-- **AWS Parameter Store Integration**: Securely manage application secrets in AWS SSM
-- See [EXTERNAL_SECRETS_USAGE.md](terraform/EXTERNAL_SECRETS_USAGE.md) for detailed setup and usage guide
+- **External Secrets Operator**: Synchronizes secrets from AWS Parameter Store into Kubernetes Secrets (v0.12.1)
+- **AWS IAM Integration**: Dedicated IAM user with least-privilege access to Parameter Store
+- **ClusterSecretStore**: Pre-configured cluster-wide secret store for all namespaces
+- **Prometheus Monitoring**: ServiceMonitor enabled for operator metrics
+- **KMS Encryption Support**: Automatic decryption of SecureString parameters
+- See [EXTERNAL_SECRETS_USAGE.md](EXTERNAL_SECRETS_USAGE.md) for detailed setup and usage guide
 
 ### Pre-configured Dashboards
 1. **Traefik Dashboard** - Ingress controller metrics and traffic
@@ -40,30 +44,43 @@ This Terraform configuration sets up a single-node K3s Kubernetes cluster on Het
 1. **Hetzner Cloud Account**: Sign up at https://www.hetzner.com/cloud
 2. **Terraform**: Install from https://developer.hashicorp.com/terraform/install
 3. **kubectl**: Install from https://kubernetes.io/docs/tasks/tools/
-4. **SSH Key**: Your existing key at `C:\Users\nndlk\.ssh\id_ed25519`
-5. **PowerShell**: For Windows automation scripts
+4. **SSH Key**: Your existing key at `path-to\.ssh\id_ed25519`
+5. **AWS Account** (optional): Required only if using External Secrets with Parameter Store
+6. **AWS CLI** (optional): Configure with `aws configure` for Parameter Store access
+7. **PowerShell or Bash**: For automation scripts
 
 ## Setup Instructions
 
 ### 1. Create Project Directory
 
 ```powershell
-mkdir k3s-hetzner
-cd k3s-hetzner
+  git clone https://github.com/lnenad/hetzner-k3s-terraform-starter.git
 ```
 
 ### 2. Verify SSH Key
 
 Ensure your public key exists:
 
+**PowerShell:**
 ```powershell
-cat C:\Users\nndlk\.ssh\id_ed25519.pub
+cat path-to\.ssh\id_ed25519.pub
+```
+
+**Bash:**
+```bash
+cat ~/.ssh/id_ed25519.pub
 ```
 
 If it doesn't exist, generate it:
 
+**PowerShell:**
 ```powershell
-ssh-keygen -t ed25519 -f C:\Users\nndlk\.ssh\id_ed25519
+ssh-keygen -t ed25519 -f path-to\.ssh\id_ed25519
+```
+
+**Bash:**
+```bash
+ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519
 ```
 
 ### 3. Create Hetzner Cloud API Token
@@ -97,11 +114,11 @@ grafana_admin_password = "YourStrongPassword123!"
 
 # AWS Configuration for External Secrets (optional - only needed if using External Secrets)
 aws_region = "us-east-1"
-aws_profile = "default"  # or your AWS profile name
+aws_profile = "default"  # optional; or your AWS profile name
 parameter_store_prefix = "k8s/production"  # Prefix for Parameter Store parameters
 ```
 
-**Important**: Add `*.tfvars` to your `.gitignore` to keep your token secure!
+**Important**: Add your `*.tfvars` to your `.gitignore` to keep your token secure!
 
 ### 5. Initialize Terraform
 
@@ -140,19 +157,34 @@ This takes about 3-5 minutes and installs:
 - cert-manager
 - Prometheus stack
 - Grafana with dashboards
+- external-secrets
+- helm chart for cloudnative-pg
 
 ### 8. Configure kubectl
 
 Set your `KUBECONFIG` environment variable:
 
+**PowerShell:**
 ```powershell
 $env:KUBECONFIG = "$PWD\k3s.yaml"
 ```
 
+**Bash:**
+```bash
+export KUBECONFIG="$PWD/k3s.yaml"
+```
+
 Or permanently add to your profile:
 
+**PowerShell:**
 ```powershell
 [Environment]::SetEnvironmentVariable("KUBECONFIG", "$PWD\k3s.yaml", "User")
+```
+
+**Bash:**
+```bash
+echo 'export KUBECONFIG="'$PWD'/k3s.yaml"' >> ~/.bashrc
+source ~/.bashrc
 ```
 
 ### 9. Verify Installation
@@ -177,8 +209,14 @@ kubectl get pods --all-namespaces
 
 Verify Hetzner cloud controller is running:
 
+**PowerShell:**
 ```powershell
 kubectl get pods -n kube-system | Select-String "hcloud"
+```
+
+**Bash:**
+```bash
+kubectl get pods -n kube-system | grep "hcloud"
 ```
 
 You should see:
@@ -201,7 +239,8 @@ Then open your browser to: http://localhost:3000
 If you set `grafana_domain` in `primary.tfvars`:
 
 1. Point your domain's DNS A record to the server IP:
-   ```powershell
+   **PowerShell/Bash:**
+   ```bash
    terraform output k3s_node_public_ip
    ```
 
@@ -310,11 +349,12 @@ k3s-hetzner/
 │   ├── monitoring.tf                # Prometheus and Grafana setup
 │   ├── cert-manager.tf              # TLS certificate management
 │   ├── traefik.tf                   # Traefik dashboard configuration
-│   ├── external-secrets.tf          # External Secrets Operator setup
+│   ├── external-secrets.tf          # External Secrets Operator + IAM resources
+│   ├── cloudnativepg.tf             # CloudNative PostgreSQL operator
 │   ├── cloud-init.yaml              # K3s installation script
 │   ├── primary.tfvars               # Your configuration (DO NOT COMMIT!)
-│   ├── k3s.yaml                     # Kubeconfig (auto-generated)
-│   └── EXTERNAL_SECRETS_USAGE.md    # External Secrets detailed guide
+│   └── k3s.yaml                     # Kubeconfig (auto-generated)
+├── EXTERNAL_SECRETS_USAGE.md        # External Secrets detailed usage guide
 └── README.md                        # This file
 ```
 
@@ -347,9 +387,19 @@ Then open: http://localhost:9093
 
 The Traefik dashboard is enabled and accessible via port-forward to the pod:
 
+**PowerShell:**
 ```powershell
 # Get Traefik pod name
 $TRAEFIK_POD = kubectl get pods -n kube-system -l app.kubernetes.io/name=traefik -o jsonpath='{.items[0].metadata.name}'
+
+# Port-forward to the pod
+kubectl port-forward -n kube-system pod/$TRAEFIK_POD 8080:8080
+```
+
+**Bash:**
+```bash
+# Get Traefik pod name
+TRAEFIK_POD=$(kubectl get pods -n kube-system -l app.kubernetes.io/name=traefik -o jsonpath='{.items[0].metadata.name}')
 
 # Port-forward to the pod
 kubectl port-forward -n kube-system pod/$TRAEFIK_POD 8080:8080
@@ -397,6 +447,7 @@ Navigate to: http://localhost:9090/targets
 
 ### Check Hetzner Cloud Controller
 
+**PowerShell:**
 ```powershell
 # Check cloud controller pods
 kubectl get pods -n kube-system | Select-String "hcloud"
@@ -408,12 +459,30 @@ kubectl logs -n kube-system -l app.kubernetes.io/name=hcloud-cloud-controller-ma
 kubectl get pods -n kube-system | Select-String "csi"
 ```
 
+**Bash:**
+```bash
+# Check cloud controller pods
+kubectl get pods -n kube-system | grep "hcloud"
+
+# Check cloud controller logs
+kubectl logs -n kube-system -l app.kubernetes.io/name=hcloud-cloud-controller-manager
+
+# Check CSI driver
+kubectl get pods -n kube-system | grep "csi"
+```
+
 ## Accessing the Server
 
 SSH into the server (password authentication is disabled, SSH key only):
 
+**PowerShell:**
 ```powershell
-ssh -i C:\Users\nndlk\.ssh\id_ed25519 admin@$(terraform output -raw k3s_node_public_ip)
+ssh -i path-to\.ssh\id_ed25519 admin@$(terraform output -raw k3s_node_public_ip)
+```
+
+**Bash:**
+```bash
+ssh -i ~/.ssh/id_ed25519 admin@$(terraform output -raw k3s_node_public_ip)
 ```
 
 ### Useful Commands on the Server
@@ -446,8 +515,14 @@ sudo cat /var/log/cloud-init-output.log
 
 Check if the Hetzner cloud controller is running:
 
+**PowerShell:**
 ```powershell
 kubectl get pods -n kube-system | Select-String "hcloud"
+```
+
+**Bash:**
+```bash
+kubectl get pods -n kube-system | grep "hcloud"
 ```
 
 If not running, check cloud-init logs on the server:
@@ -458,8 +533,14 @@ sudo cat /var/log/cloud-init-output.log | grep -i error
 
 Check node taints:
 
+**PowerShell:**
 ```powershell
 kubectl describe node k3s-node | Select-String "Taints"
+```
+
+**Bash:**
+```bash
+kubectl describe node k3s-node | grep "Taints"
 ```
 
 If the node has the uninitialized taint, wait for the cloud controller to remove it, or manually remove:
@@ -473,8 +554,14 @@ kubectl taint nodes k3s-node node.cloudprovider.kubernetes.io/uninitialized:NoSc
 The script waits up to 5 minutes for K3s to be ready. If it fails:
 
 1. Check if the server is accessible:
+   **PowerShell:**
    ```powershell
-   ssh -i C:\Users\nndlk\.ssh\id_ed25519 admin@$(terraform output -raw k3s_node_public_ip)
+   ssh -i path-to\.ssh\id_ed25519 admin@$(terraform output -raw k3s_node_public_ip)
+   ```
+
+   **Bash:**
+   ```bash
+   ssh -i ~/.ssh/id_ed25519 admin@$(terraform output -raw k3s_node_public_ip)
    ```
 
 2. Manually check K3s status:
@@ -484,9 +571,16 @@ The script waits up to 5 minutes for K3s to be ready. If it fails:
    ```
 
 3. Manually fetch kubeconfig:
+   **PowerShell:**
    ```powershell
-   scp -i C:\Users\nndlk\.ssh\id_ed25519 admin@YOUR_SERVER_IP:/etc/rancher/k3s/k3s.yaml k3s.yaml
+   scp -i path-to\.ssh\id_ed25519 admin@YOUR_SERVER_IP:/etc/rancher/k3s/k3s.yaml k3s.yaml
    (Get-Content k3s.yaml) -replace '127.0.0.1', 'YOUR_SERVER_IP' | Set-Content k3s.yaml
+   ```
+
+   **Bash:**
+   ```bash
+   scp -i ~/.ssh/id_ed25519 admin@YOUR_SERVER_IP:/etc/rancher/k3s/k3s.yaml k3s.yaml
+   sed -i 's/127.0.0.1/YOUR_SERVER_IP/g' k3s.yaml
    ```
 
 ### Monitoring Pods Not Starting
@@ -544,31 +638,78 @@ kubectl get ingress -n monitoring
 If the Grafana Traefik dashboard shows "No Data":
 
 1. **Check if Traefik metrics service exists:**
-   ```powershell
+   **PowerShell/Bash:**
+   ```bash
    kubectl get svc -n kube-system traefik-metrics
    ```
 
 2. **Check if ServiceMonitor exists:**
-   ```powershell
+   **PowerShell/Bash:**
+   ```bash
    kubectl get servicemonitor -n monitoring traefik
    ```
 
 3. **Verify Prometheus is scraping Traefik:**
-   ```powershell
+   **PowerShell/Bash:**
+   ```bash
    kubectl port-forward -n monitoring svc/kube-prometheus-stack-prometheus 9090:9090
    ```
 
    Open http://localhost:9090/targets and look for "traefik" endpoint - it should show as "UP"
 
 4. **Check Traefik metrics endpoint directly:**
-   ```powershell
+   **PowerShell/Bash:**
+   ```bash
    kubectl port-forward -n kube-system svc/traefik-metrics 9100:9100
    ```
 
    Open http://localhost:9090/metrics - you should see Traefik metrics
 
 5. **If metrics service doesn't exist, apply it manually:**
+   **PowerShell:**
    ```powershell
+   kubectl apply -f - <<'EOF'
+   apiVersion: v1
+   kind: Service
+   metadata:
+     name: traefik-metrics
+     namespace: kube-system
+     labels:
+       app.kubernetes.io/name: traefik-metrics
+   spec:
+     type: ClusterIP
+     ports:
+     - name: metrics
+       port: 9100
+       targetPort: 9100
+       protocol: TCP
+     selector:
+       app.kubernetes.io/name: traefik
+       app.kubernetes.io/instance: traefik-kube-system
+   ---
+   apiVersion: monitoring.coreos.com/v1
+   kind: ServiceMonitor
+   metadata:
+     name: traefik
+     namespace: monitoring
+     labels:
+       release: kube-prometheus-stack
+   spec:
+     selector:
+       matchLabels:
+         app.kubernetes.io/name: traefik-metrics
+     namespaceSelector:
+       matchNames:
+       - kube-system
+     endpoints:
+     - port: metrics
+       interval: 30s
+       path: /metrics
+   EOF
+   ```
+
+   **Bash:**
+   ```bash
    kubectl apply -f - <<'EOF'
    apiVersion: v1
    kind: Service
@@ -629,8 +770,14 @@ ssh-keygen -R YOUR_SERVER_IP
 
 Make sure the kubeconfig file exists before running stage 2:
 
+**PowerShell:**
 ```powershell
 Test-Path k3s.yaml
+```
+
+**Bash:**
+```bash
+test -f k3s.yaml && echo "File exists" || echo "File not found"
 ```
 
 If it doesn't exist, run stage 1 again.
@@ -654,7 +801,17 @@ If it doesn't exist, run stage 1 again.
 
 7. **TLS**: Use cert-manager with Let's Encrypt for automatic TLS certificates
 
-8. **Secrets Management**: Use External Secrets Operator with AWS Parameter Store for secure secrets management (see [EXTERNAL_SECRETS_USAGE.md](EXTERNAL_SECRETS_USAGE.md)). Never commit secrets to version control.
+8. **Secrets Management**:
+   - Use External Secrets Operator with AWS Parameter Store (automatically configured by Terraform)
+   - Always use `SecureString` type in Parameter Store for KMS encryption
+   - Rotate IAM access keys regularly (credentials in `aws-credentials` secret)
+   - Restrict parameter access using the prefix pattern (default: `/k8s/production/*`)
+   - Monitor Parameter Store access via AWS CloudTrail
+   - Never commit secrets to version control
+   - Use separate parameter prefixes for different environments
+   - See [External Secrets section](#secrets-management-with-external-secrets) for complete guide
+
+9. **CloudNative PG**: The best open source Postgres for kubernetes comes installed. Apply `cloudnative-pg.cluster.yaml` to deploy a cluster. To add monitoring import the `cloudnative-pg-grafana-dashboard.json` into grafana.
 
 ## Backup Strategy
 
@@ -670,9 +827,16 @@ Create a snapshot using Hetzner's snapshot feature or backup the persistent volu
 
 ### Backup K3s Configuration
 
+**PowerShell:**
 ```powershell
-ssh -i C:\Users\nndlk\.ssh\id_ed25519 admin@$(terraform output -raw k3s_node_public_ip) "sudo tar -czf /tmp/k3s-backup.tar.gz /etc/rancher /var/lib/rancher"
-scp -i C:\Users\nndlk\.ssh\id_ed25519 admin@$(terraform output -raw k3s_node_public_ip):/tmp/k3s-backup.tar.gz .
+ssh -i path-to\.ssh\id_ed25519 admin@$(terraform output -raw k3s_node_public_ip) "sudo tar -czf /tmp/k3s-backup.tar.gz /etc/rancher /var/lib/rancher"
+scp -i path-to\.ssh\id_ed25519 admin@$(terraform output -raw k3s_node_public_ip):/tmp/k3s-backup.tar.gz .
+```
+
+**Bash:**
+```bash
+ssh -i ~/.ssh/id_ed25519 admin@$(terraform output -raw k3s_node_public_ip) "sudo tar -czf /tmp/k3s-backup.tar.gz /etc/rancher /var/lib/rancher"
+scp -i ~/.ssh/id_ed25519 admin@$(terraform output -raw k3s_node_public_ip):/tmp/k3s-backup.tar.gz .
 ```
 
 ## Updating the Cluster
@@ -770,56 +934,383 @@ This cluster includes External Secrets Operator for managing secrets from AWS Pa
 - Automatically sync them into Kubernetes Secrets
 - Rotate secrets without redeploying applications
 - Use AWS IAM for access control and audit logging
+- Leverage AWS KMS encryption for secure storage
 
-### Quick Start
+### What Terraform Automatically Sets Up
 
-1. **Store a secret in AWS Parameter Store:**
-   ```bash
-   aws ssm put-parameter \
-     --name "/k8s/production/myapp/database-password" \
-     --value "my-secure-password" \
-     --type "SecureString" \
-     --region us-east-1
+When you run `terraform apply`, the following External Secrets infrastructure is automatically configured:
+
+#### 1. External Secrets Operator (Helm Release)
+- **Version**: 0.12.1
+- **Namespace**: `external-secrets`
+- **Features Enabled**:
+  - CRD installation (ExternalSecret, SecretStore, ClusterSecretStore)
+  - Prometheus ServiceMonitor for metrics collection
+  - Webhook for secret validation
+  - Certificate controller for TLS
+
+#### 2. AWS IAM Resources
+- **IAM User**: `external-secrets-k8s-<server-name>`
+  - Dedicated user for Kubernetes cluster access to Parameter Store
+  - Access key created and stored in Kubernetes secret
+
+- **IAM Policy**: Least-privilege access with permissions for:
+  - `ssm:GetParameter*` - Read parameters from Parameter Store
+  - `ssm:DescribeParameters` - List available parameters
+  - `kms:Decrypt` - Decrypt SecureString parameters using KMS
+  - **Restricted to prefix**: `/<parameter_store_prefix>/*` (default: `/k8s/production/*`)
+
+#### 3. Kubernetes Resources
+- **Secret**: `aws-credentials` (in `external-secrets` namespace)
+  - Contains AWS access key ID and secret access key
+  - Used by the operator to authenticate to AWS
+
+- **ClusterSecretStore**: `aws-parameter-store`
+  - Cluster-wide secret store accessible from all namespaces
+  - Pre-configured with AWS credentials
+  - Ready to use immediately after terraform apply
+
+- **SecretStore**: `aws-parameter-store` (in `default` namespace)
+  - Example namespace-scoped secret store
+  - Template for creating additional namespace-specific stores
+
+### Quick Start Guide
+
+#### Step 1: Store Secrets in AWS Parameter Store
+
+**Using AWS CLI:**
+```bash
+# Store a simple secret
+aws ssm put-parameter \
+  --name "/k8s/production/myapp/database-password" \
+  --value "my-secure-password" \
+  --type "SecureString" \
+  --region us-east-1
+
+# Store a JSON configuration
+aws ssm put-parameter \
+  --name "/k8s/production/myapp/database-config" \
+  --value '{"host":"db.example.com","port":"5432","username":"admin"}' \
+  --type "SecureString" \
+  --region us-east-1
+
+# List parameters (verify they were created)
+aws ssm describe-parameters \
+  --parameter-filters "Key=Name,Option=BeginsWith,Values=/k8s/production/" \
+  --region us-east-1
+```
+
+**Important Notes:**
+- Always use `SecureString` type for sensitive data (uses KMS encryption)
+- Follow the prefix pattern configured in your `primary.tfvars` (default: `/k8s/production/`)
+- Parameters outside this prefix won't be accessible due to IAM policy restrictions
+
+#### Step 2: Create an ExternalSecret Resource
+
+Create a file `myapp-external-secret.yaml`:
+
+```yaml
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: myapp-secret
+  namespace: default
+spec:
+  # How often to check for updates from Parameter Store
+  refreshInterval: 1h
+
+  # Reference to the ClusterSecretStore (created by Terraform)
+  secretStoreRef:
+    name: aws-parameter-store
+    kind: ClusterSecretStore
+
+  # Target Kubernetes Secret to create
+  target:
+    name: myapp-secret
+    creationPolicy: Owner
+    deletionPolicy: Retain  # Keep secret if ExternalSecret is deleted
+
+  # Map Parameter Store parameters to Secret keys
+  data:
+    # Simple parameter mapping
+    - secretKey: db-password
+      remoteRef:
+        key: /k8s/production/myapp/database-password
+
+    # Extract field from JSON parameter
+    - secretKey: db-host
+      remoteRef:
+        key: /k8s/production/myapp/database-config
+        property: host
+
+    - secretKey: db-port
+      remoteRef:
+        key: /k8s/production/myapp/database-config
+        property: port
+```
+
+Apply the ExternalSecret:
+
+**PowerShell/Bash:**
+```bash
+kubectl apply -f myapp-external-secret.yaml
+
+# Verify ExternalSecret was created
+kubectl get externalsecret myapp-secret -n default
+
+# Check if Kubernetes Secret was created
+kubectl get secret myapp-secret -n default
+
+# View ExternalSecret status
+kubectl describe externalsecret myapp-secret -n default
+```
+
+#### Step 3: Use the Secret in Your Deployment
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: myapp
+  namespace: default
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: myapp
+  template:
+    metadata:
+      labels:
+        app: myapp
+    spec:
+      containers:
+      - name: myapp
+        image: myapp:latest
+
+        # Option 1: Use as environment variables
+        env:
+          - name: DB_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: myapp-secret
+                key: db-password
+
+          - name: DB_HOST
+            valueFrom:
+              secretKeyRef:
+                name: myapp-secret
+                key: db-host
+
+          - name: DB_PORT
+            valueFrom:
+              secretKeyRef:
+                name: myapp-secret
+                key: db-port
+
+        # Option 2: Mount as files
+        volumeMounts:
+          - name: secrets
+            mountPath: /etc/secrets
+            readOnly: true
+
+      volumes:
+        - name: secrets
+          secret:
+            secretName: myapp-secret
+```
+
+### Advanced Usage
+
+#### Fetch All Parameters Under a Path
+
+Use `dataFrom` to fetch all parameters with a common prefix:
+
+```yaml
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: myapp-all-secrets
+  namespace: default
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: aws-parameter-store
+    kind: ClusterSecretStore
+  target:
+    name: myapp-all-secrets
+  dataFrom:
+    - extract:
+        key: /k8s/production/myapp/
+```
+
+This creates a Kubernetes Secret with all parameters under `/k8s/production/myapp/`.
+
+#### Parameter Versioning
+
+Fetch a specific version of a parameter:
+
+```yaml
+data:
+  - secretKey: api-key
+    remoteRef:
+      key: /k8s/production/myapp/api-key
+      version: "5"  # Specific version number
+```
+
+#### Multiple Namespaces
+
+The `ClusterSecretStore` is available to all namespaces. Just reference it in your ExternalSecret:
+
+```yaml
+# In namespace: production
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: prod-secrets
+  namespace: production
+spec:
+  secretStoreRef:
+    name: aws-parameter-store
+    kind: ClusterSecretStore  # Uses cluster-wide store
+  # ... rest of config
+```
+
+### Monitoring External Secrets
+
+#### Check Operator Status
+
+**PowerShell/Bash:**
+```bash
+# Check operator pods
+kubectl get pods -n external-secrets
+
+# View operator logs
+kubectl logs -n external-secrets -l app.kubernetes.io/name=external-secrets
+
+# Check all ExternalSecrets across namespaces
+kubectl get externalsecrets -A
+
+# Check ClusterSecretStore status
+kubectl get clustersecretstores
+kubectl describe clustersecretsstore aws-parameter-store
+```
+
+#### View Metrics in Grafana
+
+The External Secrets Operator exports Prometheus metrics. To view them:
+
+1. Access Grafana (see [Access Grafana](#10-access-grafana))
+2. Go to **Explore** → Select **Prometheus** datasource
+3. Query examples:
+   ```promql
+   # Number of ExternalSecrets by status
+   externalsecret_status_condition
+
+   # Sync call duration
+   externalsecret_sync_call_duration_seconds
+
+   # External Secrets reconcile errors
+   rate(externalsecret_reconcile_errors_total[5m])
    ```
 
-2. **Create an ExternalSecret resource:**
-   ```yaml
-   apiVersion: external-secrets.io/v1beta1
-   kind: ExternalSecret
-   metadata:
-     name: myapp-secret
-     namespace: default
-   spec:
-     refreshInterval: 1h
-     secretStoreRef:
-       name: aws-parameter-store
-       kind: ClusterSecretStore
-     target:
-       name: myapp-secret
-     data:
-       - secretKey: db-password
-         remoteRef:
-           key: /k8s/production/myapp/database-password
-   ```
+### Troubleshooting
 
-3. **Use the secret in your deployment:**
-   ```yaml
-   env:
-     - name: DB_PASSWORD
-       valueFrom:
-         secretKeyRef:
-           name: myapp-secret
-           key: db-password
-   ```
+#### ExternalSecret Not Syncing
+
+**PowerShell/Bash:**
+```bash
+# Check ExternalSecret status
+kubectl describe externalsecret myapp-secret -n default
+
+# Look for error messages in events
+kubectl get events -n default --sort-by='.lastTimestamp' | grep -i external
+
+# Check operator logs
+kubectl logs -n external-secrets deployment/external-secrets
+```
+
+**Common Issues:**
+- **Parameter not found**: Verify parameter exists and path is correct
+- **Access denied**: Check IAM policy and parameter prefix match
+- **Wrong region**: Ensure AWS region in ClusterSecretStore matches parameter location
+- **Credentials invalid**: Verify `aws-credentials` secret exists and is valid
+
+#### Verify AWS Access
+
+**PowerShell/Bash:**
+```bash
+# Get the IAM user created by Terraform
+terraform output aws_iam_user_name
+
+# Test Parameter Store access (from your local machine)
+aws ssm get-parameter \
+  --name "/k8s/production/myapp/database-password" \
+  --with-decryption \
+  --region us-east-1
+
+# List accessible parameters
+aws ssm describe-parameters \
+  --parameter-filters "Key=Name,Option=BeginsWith,Values=/k8s/production/" \
+  --region us-east-1
+```
+
+#### Force Secret Refresh
+
+If secrets aren't updating automatically:
+
+**PowerShell/Bash:**
+```bash
+# Delete and recreate the ExternalSecret (forces immediate sync)
+kubectl delete externalsecret myapp-secret -n default
+kubectl apply -f myapp-external-secret.yaml
+
+# Or annotate to trigger reconciliation
+kubectl annotate externalsecret myapp-secret \
+  -n default \
+  force-sync="$(date +%s)" \
+  --overwrite
+```
+
+### View Terraform Outputs
+
+After deployment, view External Secrets configuration:
+
+**PowerShell/Bash:**
+```bash
+# View complete External Secrets info
+terraform output external_secrets_info
+
+# Get IAM user details
+terraform output aws_iam_user_name
+terraform output aws_iam_user_arn
+```
+
+### Security Best Practices
+
+1. **Use SecureString parameters**: Always use `--type "SecureString"` for sensitive data
+2. **Rotate credentials regularly**: Update AWS access keys periodically
+3. **Least privilege principle**: The IAM policy only grants access to parameters under your prefix
+4. **Monitor access**: Use AWS CloudTrail to audit Parameter Store access
+5. **Set appropriate refresh intervals**: Balance between freshness and API costs (1h recommended)
+6. **Use deletionPolicy: Retain**: Prevents accidental secret deletion if ExternalSecret is removed
+7. **Separate by environment**: Use different prefixes for dev/staging/prod (`/k8s/production/`, `/k8s/staging/`)
+8. **Leverage KMS**: SecureString parameters are automatically encrypted with AWS KMS
+
+### Cost Considerations
+
+- **Parameter Store**: First 10,000 parameters free, then $0.05 per parameter per month
+- **API Calls**: $0.05 per 10,000 API calls (GetParameter, GetParameters)
+- **KMS**: $1/month per key + $0.03 per 10,000 decrypt requests
+- **Optimization**: Set `refreshInterval: 1h` or higher for static secrets to minimize API calls
 
 ### Full Documentation
 
-For complete setup instructions, advanced usage, Helm integration, and troubleshooting, see:
-**[External Secrets Usage Guide](terraform/EXTERNAL_SECRETS_USAGE.md)**
+For complete setup instructions, advanced usage patterns, Helm chart integration, and detailed troubleshooting, see:
+**[External Secrets Usage Guide](EXTERNAL_SECRETS_USAGE.md)**
 
 ## Next Steps
 
-1. **Set Up Secrets Management**: Configure External Secrets for your applications (see [EXTERNAL_SECRETS_USAGE.md](terraform/EXTERNAL_SECRETS_USAGE.md))
+1. **Set Up Secrets Management**: Configure External Secrets for your applications (see section above or [EXTERNAL_SECRETS_USAGE.md](EXTERNAL_SECRETS_USAGE.md))
 
 2. **Deploy Applications**: Start deploying your applications to the cluster
 
@@ -845,7 +1336,53 @@ To test the cluster and see data in Traefik/Grafana dashboards, deploy a simple 
 
 **Note:** Port-forwarding bypasses Traefik, so it won't generate metrics. Use this only for quick testing of the application itself.
 
+**PowerShell:**
 ```powershell
+# Deploy the whoami test app
+kubectl apply -f - <<'EOF'
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: whoami
+  namespace: default
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: whoami
+  template:
+    metadata:
+      labels:
+        app: whoami
+    spec:
+      containers:
+      - name: whoami
+        image: traefik/whoami:latest
+        ports:
+        - containerPort: 80
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: whoami
+  namespace: default
+spec:
+  selector:
+    app: whoami
+  ports:
+  - port: 80
+    targetPort: 80
+EOF
+
+# Test via port-forward (bypasses Traefik - no metrics)
+kubectl port-forward svc/whoami 8080:80
+
+# In another terminal, test it
+curl http://localhost:8080
+```
+
+**Bash:**
+```bash
 # Deploy the whoami test app
 kubectl apply -f - <<'EOF'
 apiVersion: apps/v1
@@ -895,6 +1432,7 @@ curl http://localhost:8080
 
 **Option A: Using catch-all Ingress (easiest, no DNS needed)**
 
+**PowerShell:**
 ```powershell
 # Create Ingress without specific host
 kubectl apply -f - <<'EOF'
@@ -929,8 +1467,44 @@ for ($i=0; $i -lt 100; $i++) {
 }
 ```
 
+**Bash:**
+```bash
+# Create Ingress without specific host
+kubectl apply -f - <<'EOF'
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: whoami
+  namespace: default
+spec:
+  ingressClassName: traefik
+  rules:
+  - http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: whoami
+            port:
+              number: 80
+EOF
+
+# Access via server IP (goes through Traefik)
+SERVER_IP=$(terraform output -raw k3s_node_public_ip)
+curl "http://$SERVER_IP/" > /dev/null 2>&1
+
+# Generate traffic to populate metrics
+for i in {1..100}; do
+    curl -s "http://$SERVER_IP/" > /dev/null
+    echo "Request $i"
+    sleep 0.1
+done
+```
+
 **Option B: Using Host header (no DNS/hosts file needed)**
 
+**PowerShell:**
 ```powershell
 # Create Ingress with specific host
 kubectl apply -f - <<'EOF'
@@ -969,9 +1543,47 @@ for ($i=0; $i -lt 100; $i++) {
 }
 ```
 
+**Bash:**
+```bash
+# Create Ingress with specific host
+kubectl apply -f - <<'EOF'
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: whoami
+  namespace: default
+spec:
+  ingressClassName: traefik
+  rules:
+  - host: whoami.local
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: whoami
+            port:
+              number: 80
+EOF
+
+# Access using Host header (goes through Traefik)
+SERVER_IP=$(terraform output -raw k3s_node_public_ip)
+curl -H "Host: whoami.local" "http://$SERVER_IP/" > /dev/null 2>&1
+
+# Generate traffic
+for i in {1..100}; do
+    curl -s -H "Host: whoami.local" "http://$SERVER_IP/" > /dev/null
+    echo "Request $i"
+    sleep 0.1
+done
+```
+
 **Option C: Using hosts file**
 
-As Administrator, edit `C:\Windows\System32\drivers\etc\hosts` and add:
+**Windows:** As Administrator, edit `C:\Windows\System32\drivers\etc\hosts` and add:
+
+**Linux/Mac:** Edit `/etc/hosts` (requires sudo) and add:
 
 ```
 YOUR_SERVER_IP whoami.local
@@ -979,8 +1591,16 @@ YOUR_SERVER_IP whoami.local
 
 Then access normally:
 
+**PowerShell:**
 ```powershell
 Invoke-WebRequest -Uri "http://whoami.local/" | Out-Null
+
+# Or open in browser: http://whoami.local/
+```
+
+**Bash:**
+```bash
+curl "http://whoami.local/" > /dev/null 2>&1
 
 # Or open in browser: http://whoami.local/
 ```
@@ -1076,6 +1696,7 @@ After deploying the app and **sending traffic through Traefik** (not port-forwar
 
 Generate traffic through Traefik:
 
+**PowerShell:**
 ```powershell
 # Get server IP
 $SERVER_IP = terraform output -raw k3s_node_public_ip
@@ -1093,6 +1714,26 @@ for ($i=0; $i -lt 100; $i++) {
     Write-Host "Request $i"
     Start-Sleep -Milliseconds 100
 }
+```
+
+**Bash:**
+```bash
+# Get server IP
+SERVER_IP=$(terraform output -raw k3s_node_public_ip)
+
+# Generate test traffic through Traefik (Option 1: catch-all ingress)
+for i in {1..100}; do
+    curl -s "http://$SERVER_IP/" > /dev/null
+    echo "Request $i"
+    sleep 0.1
+done
+
+# Or with Host header (Option 2)
+for i in {1..100}; do
+    curl -s -H "Host: whoami.local" "http://$SERVER_IP/" > /dev/null
+    echo "Request $i"
+    sleep 0.1
+done
 ```
 
 Then check Grafana - metrics should now appear!
