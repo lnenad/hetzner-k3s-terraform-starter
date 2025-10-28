@@ -1,0 +1,39 @@
+#cloud-config
+packages:
+  - curl
+
+users:
+  - name: admin
+    ssh-authorized-keys:
+      - ${local_ssh_public_key}
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    shell: /bin/bash
+    lock_passwd: true
+
+runcmd:
+  - apt-get update -y
+  # K3s installation script for single node setup:
+  # --disable-cloud-controller --kubelet-arg cloud-provider=external: Use Hetzner's cloud controller manager
+  # --tls-san ${public_ip}: Add public IP as Subject Alternative Name on the TLS cert
+  # --disable servicelb: Disable K3s load balancer to use Hetzner Load Balancer
+  # --flannel-iface enp7s0: Use private network interface
+  # --write-kubeconfig-mode 644: Make kubeconfig readable
+  - curl https://get.k3s.io | INSTALL_K3S_EXEC="--tls-san ${public_ip} --disable servicelb --flannel-iface enp7s0 --write-kubeconfig-mode 644 --disable-cloud-controller --kubelet-arg cloud-provider=external" sh -
+  # Wait for K3s to be ready with a longer timeout
+  - timeout 300 bash -c 'until sudo k3s kubectl get nodes 2>/dev/null; do echo "Waiting for K3s..."; sleep 5; done'
+  # Create secrets for Hetzner's cloud controller manager
+  - sudo k3s kubectl -n kube-system create secret generic hcloud --from-literal=token=${hcloud_token} --from-literal=network=${hcloud_network} || true
+  - sudo k3s kubectl -n kube-system create secret generic hcloud-csi --from-literal=token=${hcloud_token} || true
+  # Download and configure Hetzner's cloud controller manager manifests
+  - wget https://github.com/hetznercloud/hcloud-cloud-controller-manager/releases/latest/download/ccm-networks.yaml -O /root/ccm-networks.yaml
+  # Set the Cluster CIDR to match K3s default (10.42.0.0/16)
+  - sed -i 's/cluster-cidr=10.244.0.0\/16/cluster-cidr=10.42.0.0\/16/g' /root/ccm-networks.yaml
+  # Install Hetzner's cloud controller manager
+  - sudo k3s kubectl apply -f /root/ccm-networks.yaml
+  # Wait a bit for CCM to initialize
+  - sleep 10
+  # Install Hetzner's CSI drivers
+  - sudo k3s kubectl apply -f https://raw.githubusercontent.com/hetznercloud/csi-driver/v2.6.0/deploy/kubernetes/hcloud-csi.yml
+  # Cleanup
+  - apt clean
+  - apt autoclean
